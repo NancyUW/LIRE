@@ -1,0 +1,226 @@
+\documentclass{article}
+\usepackage{setspace, relsize} %for latex(describe()), \code
+\usepackage{moreverb}          %for verbatimtabinput
+\usepackage[pdftex]{lscape}    %allows tables to be landscape
+\usepackage{longtable}         %allows tables to break across pages
+\usepackage{url}               %puts URL in different text
+\usepackage[margin=.5in, landscape]{geometry} %resets margins
+\usepackage{hyperref}
+\usepackage{pdfpages}
+
+% New command to make R code stand out
+\newcommand{\co}[1]{\texttt{\smaller #1}}
+  
+\title{Moving Averages}
+\date{}
+
+\begin{document}
+%\maketitle
+
+<<setup, include=FALSE, results='hide', cache=FALSE>>=
+opts_chunk$set(echo=FALSE, warning = FALSE, message = FALSE, cache = FALSE, error = FALSE)
+options(replace.assign = TRUE, width = 90)
+
+# How many images per site per wave
+# ---> Of those images, what % of providers had already seen n images with macros 
+
+library(reshape2)
+library(ggplot2)
+library(plyr)
+library(scales)
+library(Hmisc)
+library(data.table)
+library(zoo)
+library(RColorBrewer)
+
+@
+
+<<reading, include=FALSE, results='hide', cache=FALSE>>=
+
+################### Reading and processing ####################
+lire = read.csv("~/Documents/LIRE/lire_idx_2015_09_08.csv")
+
+# Refactoring and creating a site name variable
+lire$siteIDname = as.factor(ifelse(lire$siteID == 1, "Group Health", 
+                            ifelse(lire$siteID == 2, "Kaiser", 
+                            ifelse(lire$siteID == 3, "Henry Ford", 
+                            ifelse(lire$siteID == 4, "Mayo", NA)))))
+
+lire$clinicID_factor = as.factor(lire$clinicID)
+lire$wave = as.factor(lire$wave)
+
+# Makeing date variable an R date, and selecting rate ranges
+lire$indexDate = as.Date(as.character(lire$indexDate), '%m/%d/%y')
+lire = lire[lire$indexDate >= '2013-10-01' & lire$indexDate <= '2015-03-31',]
+
+# Subsetting out only the helpful variables. 
+# lire_sub_sel stands for "LIRE Subsetted Selections"
+lire_sub_sel = subset(lire, select = c(siteIDname, clinicID_factor, indexDate, wave))
+
+# Tallying how many index images per date/clinic/wave
+counts = count(lire_sub_sel, vars = c("siteIDname", "clinicID_factor", "indexDate", "wave"))
+
+# Creating a unique site_clinic variable to avoid having the same
+# clinic numbers at different sites
+counts$site_clinic = as.factor(paste(counts$siteIDname, "-", counts$clinicID_factor, sep = ""))
+
+# Removing the now-obsolete clinicID_factor variable
+#counts  = subset(counts, select = c(siteIDname, indexDate, wave, freq, site_clinic))
+
+################### Missing Dates ####################
+
+# Values to use in the following function to pad "counts" data.frame with 
+# dates where no index images were taken
+all_dates = seq(as.Date("2013/10/01"), as.Date("2015/3/31"), by = "days")
+sites = as.vector(levels(lire_sub_sel$siteIDname))
+clinics = unique(counts$site_clinic)
+num_clinics = length(clinics)
+
+# Initialize empty list to fill with data frames of dates/clinic/wave.
+# Since a given clinic is *only* in 1 wave, I didn't iterate over waves, too. 
+dflist = list()
+for(i in c(1:num_clinics)){
+  missing_dates = all_dates[all_dates %nin% counts$indexDate[counts$site_clinic == clinics[i]]]
+  num_missing_date = length(missing_dates)
+  new_rows = do.call("rbind", 
+                     replicate(num_missing_date, counts[counts$site_clinic == clinics[i],][1,], simplify = FALSE))
+  new_rows$indexDate = missing_dates
+  new_rows$freq = 0
+  new_rows$site_clinic = as.factor(new_rows$site_clinic)
+  dflist[[i]] = new_rows
+  print(paste("Working on clinic ", i, "/", num_clinics, ".", sep = "" ))
+}
+new_rows_collapsed = rbindlist(dflist)
+
+# Binding together the padding rows and the original data frame. 
+# All dates should now be accounted for in the moving averages below. 
+counts = rbind(counts, new_rows_collapsed)
+counts = counts[order(counts$indexDate),]
+
+################### Calculating Moving Average ####################
+
+# This uses the rollmean() function from the {zoo} library. 
+counts$rolling_freq = NA
+for(i in c(1:num_clinics)){
+  counts$rolling_freq[counts$site_clinic == clinics[i]] = 
+    rollmean(counts$freq[counts$site_clinic == clinics[i]],
+                   k = 30,na.pad = TRUE)
+}
+
+# Creating a small data frame that will allow me to count how many 
+# clinics there are per site. This count will become a factor that can
+# be used to color and label the final graphics that show moving averages
+# per clinic for an entire site. 
+nth_clinic_df = unique(data.frame(wave = counts$wave, siteIDname = counts$siteIDname,
+                         site_clinic = counts$site_clinic))
+
+num_clinics_list = rep(list(list()),4) 
+for(i in 1:4){
+  for(j in 1:5){
+    current = nth_clinic_df[nth_clinic_df$wave == j & nth_clinic_df$siteIDname == sites[i],]
+    current$nth = c(1:length(current$site_clinic))
+    num_clinics_list[[i]][[j]] = current
+  }
+}
+
+numbered_clinics = rbindlist(lapply(num_clinics_list, rbindlist))
+counts = join(counts, numbered_clinics)
+counts$nth = as.factor(as.character(counts$nth))
+counts$nth = factor(counts$nth, levels = as.character(c(1:length(levels(counts$nth)))))
+
+
+group_health = counts[counts$siteIDname == "Group Health",]
+henry_ford = counts[counts$siteIDname == "Henry Ford"]
+kaiser = counts[counts$siteIDname == "Kaiser",]
+mayo = counts[counts$siteIDname == "Mayo",]
+
+rm(counts)
+rm(lire)
+rm(lire_sub_sel)
+rm(new_rows_collapsed)
+rm(new_rows)
+@
+
+<<plotting_setup, include=FALSE, cache=FALSE>>=
+
+bupu = rev(brewer.pal(name="BuPu", n=7))
+rdylgn = rev(brewer.pal(name="RdYlGn", n=9))
+set.seed(123)
+mypalette = sample(c(rdylgn, bupu),16, replace = FALSE)
+
+rolling_plot = function(data, yourtitle){
+    ggplot() + 
+    geom_line(data = data, aes(x=indexDate, y=rolling_freq, color = nth)) + 
+      theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+      scale_x_date(breaks = date_breaks("month"), labels = date_format ("%Y-%m")) + 
+      facet_grid(wave ~.)+
+      xlab("Index Date") + 
+      ylab("30 Day Moving Average") + 
+      ggtitle(yourtitle) + 
+      guides(color=guide_legend(title="Clinic/Wave"))
+}
+
+kaiser_plot =       rolling_plot(data = kaiser, yourtitle = "Kaiser")
+group_health_plot = rolling_plot(data = group_health, yourtitle = "Group Health")
+mayo_plot =         rolling_plot(data = mayo, yourtitle = "Mayo")
+henry_ford_plot =   rolling_plot(data = henry_ford, yourtitle = "Henry Ford")
+
+
+@
+
+<<printplotscreen, results='asis', fig.width=9, fig.height=7, out.width='9in', out.height='7in'>>=
+group_health_plot
+henry_ford_plot
+kaiser_plot
+mayo_plot
+
+
+@
+
+\section{Moving Averages Per Site and Wave}
+
+<<plotting_setup2, include=FALSE, cache=FALSE>>=
+
+rolling_plot_per_wave = function(data, yourtitle){
+    ggplot() + 
+    geom_line(data = data, aes(x=indexDate, y=rolling_freq, color = clinicID_factor)) + 
+      theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+      scale_x_date(breaks = date_breaks("month"), labels = date_format ("%Y-%m")) + 
+      xlab("Index Date") + 
+      ylab("30 Day Moving Average") + 
+      ggtitle(yourtitle) + 
+      guides(color=guide_legend(title="Clinic/Wave"))
+}
+
+@
+
+<<printplotscreen2, results='asis', fig.width=9, fig.height=7, out.width='9in', out.height='7in'>>=
+
+rolling_plot_per_wave(group_health[group_health$wave == 1,], paste(group_health$siteIDname[1], ": Wave 1", sep = ""))
+rolling_plot_per_wave(group_health[group_health$wave == 2,], paste(group_health$siteIDname[1], ": Wave 2", sep = ""))
+rolling_plot_per_wave(group_health[group_health$wave == 3,], paste(group_health$siteIDname[1], ": Wave 3", sep = ""))
+rolling_plot_per_wave(group_health[group_health$wave == 4,], paste(group_health$siteIDname[1], ": Wave 4", sep = ""))
+rolling_plot_per_wave(group_health[group_health$wave == 5,], paste(group_health$siteIDname[1], ": Wave 5", sep = ""))
+
+rolling_plot_per_wave(henry_ford[henry_ford$wave == 1,], paste(henry_ford$siteIDname[1], ": Wave 1", sep = ""))
+rolling_plot_per_wave(henry_ford[henry_ford$wave == 2,], paste(henry_ford$siteIDname[1], ": Wave 2", sep = ""))
+rolling_plot_per_wave(henry_ford[henry_ford$wave == 3,], paste(henry_ford$siteIDname[1], ": Wave 3", sep = ""))
+rolling_plot_per_wave(henry_ford[henry_ford$wave == 4,], paste(henry_ford$siteIDname[1], ": Wave 4", sep = ""))
+rolling_plot_per_wave(henry_ford[henry_ford$wave == 5,], paste(henry_ford$siteIDname[1], ": Wave 5", sep = ""))
+
+rolling_plot_per_wave(kaiser[kaiser$wave == 1,], paste(kaiser$siteIDname[1], ": Wave 1", sep = ""))
+rolling_plot_per_wave(kaiser[kaiser$wave == 2,], paste(kaiser$siteIDname[1], ": Wave 2", sep = ""))
+rolling_plot_per_wave(kaiser[kaiser$wave == 3,], paste(kaiser$siteIDname[1], ": Wave 3", sep = ""))
+rolling_plot_per_wave(kaiser[kaiser$wave == 4,], paste(kaiser$siteIDname[1], ": Wave 4", sep = ""))
+rolling_plot_per_wave(kaiser[kaiser$wave == 5,], paste(kaiser$siteIDname[1], ": Wave 5", sep = ""))
+
+rolling_plot_per_wave(mayo[mayo$wave == 1,], paste(mayo$siteIDname[1], ": Wave 1", sep = ""))
+rolling_plot_per_wave(mayo[mayo$wave == 2,], paste(mayo$siteIDname[1], ": Wave 2", sep = ""))
+rolling_plot_per_wave(mayo[mayo$wave == 3,], paste(mayo$siteIDname[1], ": Wave 3", sep = ""))
+rolling_plot_per_wave(mayo[mayo$wave == 4,], paste(mayo$siteIDname[1], ": Wave 4", sep = ""))
+rolling_plot_per_wave(mayo[mayo$wave == 5,], paste(mayo$siteIDname[1], ": Wave 5", sep = ""))
+
+
+@
+
+\end{document}
