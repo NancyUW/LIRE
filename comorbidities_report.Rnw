@@ -1,0 +1,240 @@
+
+\documentclass{article}
+\usepackage{setspace, relsize} %for latex(describe()), \code
+\usepackage{moreverb}          %for verbatimtabinput
+\usepackage[pdftex]{lscape}    %allows tables to be landscape
+\usepackage{longtable}         %allows tables to break across pages
+\usepackage{url}               %puts URL in different text
+\usepackage[margin=.5in, landscape]{geometry} %resets margins
+\usepackage{hyperref}
+\usepackage{pdfpages}
+
+% New command to make R code stand out
+\newcommand{\co}[1]{\texttt{\smaller #1}}
+  
+%\title{LIRE Co-morbidities Report}
+\date{}
+
+
+
+\begin{document}
+%\maketitle
+
+<<setup, include=FALSE, results='hide', cache=FALSE>>=
+opts_chunk$set(echo=FALSE, warning = FALSE, message = FALSE, cache = FALSE, error = FALSE)
+options(replace.assign = TRUE, width = 90)
+
+# How many images per site per wave
+# ---> Of those images, what % of providers had already seen n images with macros 
+
+#Monthly, per-site macros, shaded by
+library(RColorBrewer)
+library(reshape2)
+library(ggplot2)
+library(plyr)
+library(scales)
+library(Hmisc)
+library(data.table)
+library(zoo)
+library(icd9)
+
+@
+
+<<loadfunctions>>=
+# Multiplot function to use multiple plots on one page. 
+# Cite: Winston Chang - http://www.cookbook-r.com/Graphs/Multiple_graphs_on_one_page_(ggplot2)/
+
+multiplot <- function(..., plotlist=NULL, file, cols=1, layout=NULL) {
+  require(grid)
+  plots <- c(list(...), plotlist)
+  numPlots = length(plots)
+  if (is.null(layout)) {
+    layout <- matrix(seq(1, cols * ceiling(numPlots/cols)), ncol = cols, nrow = ceiling(numPlots/cols))
+  }
+ if (numPlots==1) {
+    print(plots[[1]])
+  } else {
+    grid.newpage()
+    pushViewport(viewport(layout = grid.layout(nrow(layout), ncol(layout))))
+    for (i in 1:numPlots) {
+      matchidx <- as.data.frame(which(layout == i, arr.ind = TRUE))
+      print(plots[[i]], vp = viewport(layout.pos.row = matchidx$row, layout.pos.col = matchidx$col))
+    }
+  }
+}
+@
+
+<<reading, include=FALSE, results='hide', cache=FALSE>>=
+
+# LIRE index data
+lire = read.csv("~/Documents/LIRE/lire_idx_2015_09_08.csv")
+lire$indexDate = as.Date(as.character(lire$indexDate), '%m/%d/%y')
+# Subsetting LIRE data
+lire = lire[lire$indexDate >= '2013-10-01' & lire$indexDate <= '2015-03-31',]
+
+# LIRE Comorbidity data at Kaiser
+lire_co = read.csv("~/Documents/LIRE/lire_comorbidity_test_2015_09_17.csv")
+lire_co = subset(lire_co, select = -c(isInpatientVisit, isPrimaryDx))
+# Rename to work well with 
+#names(lire_co) = c("visitID", "isInpatientVisit", "visitCode", "visitDate", "isPrimaryDx", "icd9")
+names(lire_co) = c("visitID",  "visitCode", "visitDate",  "icd9")
+lire_co$visitID = as.factor(lire_co$visitID)
+
+# Take lire_co patients that are also in lire
+lire_co = lire_co[which(lire_co$visitID %in% lire$studyCode),]
+lire_co$icd9 = icd9ShortToDecimal(lire_co$icd9)
+
+lire_co$visitDate = as.Date(as.character(lire_co$visitDate), '%m/%d/%y')
+lire_co$visitCode = as.factor(lire_co$visitCode)
+lire_co$visitDate_monthly = as.factor(as.yearmon(lire_co$visitDate, "%b%y"))
+lire_co$visitDateQuarterly = paste(quarters(lire_co$visitDate), "-", format(lire_co$visitDate, "%Y"), sep = "")
+
+
+# Creating a patient-visit variable. 
+lire_co$pt_visit = as.factor(paste(lire_co$visitID, "-", lire_co$visitCode, sep = ""))
+
+#lire_co$real = icd9IsReal(lire_co$icd9)
+
+# These are the patients with syntactically invalid ICD-9 codes. 
+#lire_co$valid = icd9IsValid(lire_co$icd9, isShort = TRUE) 
+#lire_co$explain = ifelse(lire_co$real == TRUE, icd9Explain(lire_co$icd9), NA)
+################## Faking other sites ###############
+siteIDname = c("Henry Ford", "Group Health", "Kaiser","Mayo")
+siteIDname = sample(siteIDname, length(lire_co$visitID), replace = TRUE)
+lire_co$siteIDname = siteIDname
+
+################## Charlson Comorbidity Index ###############
+# WHICH OF THESE DO WE CARE ABOUT MORE? PER PATIENT OR PER PATIENT-VISIT?
+#visit_charlson = icd9Charlson(lire_co, isShort = FALSE, return.df = TRUE, visitId = "pt_visit")
+#visit_charlson$Charlson = as.factor(visit_charlson$Charlson)
+pt_charlson = icd9Charlson(lire_co, isShort = FALSE, return.df = TRUE)
+pt_charlson$Charlson = as.factor(pt_charlson$Charlson)
+
+#lire_co = join(lire_co, visit_charlson, by = "pt_visit")
+#names(lire_co)[names(lire_co) == "Charlson"] = "pt_visit_charlson"
+
+lire_co = join(lire_co, pt_charlson, by = "visitID")
+names(lire_co)[names(lire_co) == "Charlson"] = "pt_charlson"
+
+quandeyo_Comorbid = icd9Comorbid(lire_co, quanDeyoComorbid, return.df = TRUE)
+#quandeyo_Comorbid = join(quandeyo_Comorbid, subset(lire_co,select = c(visitID, siteIDname, visitDate_monthly)))
+quandeyo_Comorbid = join(quandeyo_Comorbid, subset(lire_co,select = c(visitID, siteIDname, visitDateQuarterly)))
+quandeyo_Comorbid = subset(quandeyo_Comorbid, select = -c(visitID))
+
+# This provides boolean values for each comorbidity per month so that
+# I can use stat = "bin"
+#quandeyo_melted1 = melt(quandeyo_Comorbid, id.vars = c("visitDate_monthly", "siteIDname"))
+quandeyo_melted1 = melt(quandeyo_Comorbid, id.vars = c("visitDateQuarterly", "siteIDname"))
+quandeyo_melted1 = quandeyo_melted1[quandeyo_melted1$value == TRUE,]
+
+# Aggregating the number of each comorbidity in ROWS
+quandeyo_Comorbid = aggregate(.~visitDateQuarterly + siteIDname, quandeyo_Comorbid, sum)
+# ...And then melting it.
+quandeyo_melted = melt(quandeyo_Comorbid, id.vars = c("visitDateQuarterly", "siteIDname"))
+
+charlson_counts = subset(lire_co, select = c(siteIDname, visitDateQuarterly, pt_charlson))
+agg_charlson_scores = ddply(charlson_counts,.(siteIDname, visitDateQuarterly, pt_charlson),nrow)
+
+@
+
+<<plotting_setup, include=FALSE, cache=FALSE>>=
+
+pt_charlson_plot = ggplot(data = lire_co) + 
+  geom_density(aes(x=visitDateQuarterly, group=pt_charlson,fill=pt_charlson),alpha=.3) +
+  ggtitle("Charlson Scores per Patient") + 
+  scale_fill_discrete(name="Charlson Score") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  xlab("Date") + 
+  ylab("Count") + 
+  scale_y_continuous(breaks = pretty_breaks(10)) +
+  facet_grid(siteIDname~.,scales = "free_y")
+
+pt_charlson_plot2 = ggplot(data = lire_co) + 
+  geom_bar(aes(x=visitDateQuarterly,group=pt_charlson, fill=pt_charlson,stat="bin",
+               order = as.numeric(pt_charlson)))+
+  ggtitle("Charlson Scores per Patient") + 
+  scale_fill_discrete(name="Charlson Score") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(fill = "gray90")) +
+  xlab("Date") + 
+  ylab("Count") + 
+  scale_y_continuous(breaks = pretty_breaks(10)) +
+  facet_grid(siteIDname~.,scales = "free_y") + 
+  guides(fill = guide_legend(reverse = TRUE))
+
+charlson_heatmap = ggplot(data = agg_charlson_scores) + 
+  geom_tile(aes(x = visitDateQuarterly, y = pt_charlson, fill = V1)) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  xlab("Date") + 
+  ylab("Charlson Score") + 
+  ggtitle("Frequencies of Charlson Scores over Time") + 
+  scale_fill_continuous(name="Freqency")
+
+
+myheatmap = ggplot(data = quandeyo_melted) + 
+  geom_tile(aes(x = visitDateQuarterly, y = variable, fill = value)) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  xlab("Date") + 
+  ylab("Comorbidity") + 
+  scale_fill_continuous(limits = c(0,max(quandeyo_melted$value)),
+                        low="darkblue", high="darkgoldenrod1", name="Frequency") + 
+  ggtitle("Frequencies of Comorbidities over Time")
+
+comorbid_plot = ggplot(data = quandeyo_melted1) + 
+  geom_bar(aes(x = visitDateQuarterly, fill=variable, stat = "identity")) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  xlab("Date") + 
+  ylab("Count") +
+  facet_grid(siteIDname~.) + 
+  ggtitle("Frequencies of Comorbidities over Time per Site") +
+  scale_fill_discrete(name="Comorbidity") + 
+  guides(fill = guide_legend(reverse = TRUE))
+
+
+comorbid_plot2 = ggplot(data = quandeyo_melted1) + 
+  geom_bar(aes(x = visitDateQuarterly, fill=variable, stat = "identity")) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  xlab("Date") + 
+  ylab("Count") +
+  facet_grid(variable~.) + 
+  theme(legend.position = "none", strip.text.y = element_text(angle=0),
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(fill = "gray90")) +
+  scale_y_continuous(breaks = pretty_breaks(3)) + 
+  ggtitle("Frequencies of Comorbidities Over Time") + 
+  guides(fill = guide_legend(reverse = TRUE))
+
+
+charlson_summary = ggplot(data = lire_co) + 
+  geom_boxplot(aes(x=visitDateQuarterly,  y=as.numeric(as.character(pt_charlson)),
+                   fill = siteIDname)) + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  ggtitle("Charlson Scores Over Time") +
+  facet_grid(siteIDname~.) +
+  theme(legend.position = "none", panel.grid.minor = element_blank()) + 
+  xlab("Month") + 
+  ylab("Charlson Score")
+
+
+  
+
+@
+
+
+<<printplotscreen, results='asis', fig.width=10, fig.height=7, out.width='9in', out.height='7in'>>=
+
+pt_charlson_plot 
+pt_charlson_plot2
+charlson_heatmap
+myheatmap 
+comorbid_plot
+comorbid_plot2
+charlson_summary 
+@
+
+\end{document}
+
+
+
+
