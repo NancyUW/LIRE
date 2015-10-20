@@ -95,8 +95,6 @@ mock$death6m_pct_change = 100*(mock$death6m-mock$death6m_means)/mock$death6m_mea
 mock$er3m_pct_change = 100*(mock$er3m-mock$er3m_means)/mock$er3m_means
 
 mock$static = as.factor("Test factor")
-
-
 @
 
 <<plotting_setup, include=FALSE, cache=FALSE>>=
@@ -105,7 +103,7 @@ six_month_actual = ggplot(data = mock) +
   geom_line(aes(x = period, y = death6m_means, group = siteIDname, linetype = static)) + 
   scale_linetype_manual(name = "Mean deaths in period 0", values = c("dotted"), labels = c("")) + 
   geom_point(aes(x = period, y = death6m, color = siteIDname)) + 
-  facet_grid(siteIDname~wave, scales="free_y")+ 
+  facet_grid(siteIDname~wave, scales="free_y") + 
   theme(legend.background = element_rect(fill="transparent", color = "black"),
         panel.grid.minor = element_blank()) +
   ylab("Deaths at Six Months") + 
@@ -140,8 +138,6 @@ six_month_magnitude = ggplot(data = mock) +
   scale_y_continuous(breaks = pretty_breaks(10)) + 
   geom_text(aes(x = period, y = death6m_pct_change + 15, label = death6m), size = 4)
 
-
-
 three_month_magnitude = ggplot(data = mock) + 
   geom_line(aes(x = period, y = er3m_pct_change, color = siteIDname, group = siteIDname)) +
   geom_point(aes(x = period, y = er3m_pct_change, color = siteIDname)) +
@@ -153,7 +149,6 @@ three_month_magnitude = ggplot(data = mock) +
   ggtitle("Percent Change ER Visits by 3 Months per Site and Wave") + 
   scale_color_discrete(name = "Site") + 
   scale_y_continuous(breaks = pretty_breaks(10))
-
 
 @
 
